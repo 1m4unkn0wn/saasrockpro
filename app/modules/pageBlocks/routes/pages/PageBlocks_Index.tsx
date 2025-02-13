@@ -1,0 +1,90 @@
+// @@@ pwned by 1m4unkn0wn @@@
+import { LoaderFunctionArgs, redirect, ActionFunction } from "react-router";
+import { PageBlockDto } from "~/modules/pageBlocks/dtos/PageBlockDto";
+import { getTranslations } from "~/locale/i18next.server";
+import { deletePageBlocks, createPageBlock } from "~/modules/pageBlocks/db/pageBlocks.db.server";
+import { deletePage, getPage } from "../../db/pages.db.server";
+import { PageConfiguration } from "../../dtos/PageConfiguration";
+import { getPageConfiguration } from "../../services/.server/pagesService";
+import { verifyUserHasPermission } from "~/utils/helpers/.server/PermissionsService";
+
+export namespace PageBlocks_Index {
+  export type LoaderData = {
+    page: PageConfiguration;
+  };
+  export const loader = async ({ request, params }: LoaderFunctionArgs) => {
+    await verifyUserHasPermission(request, "admin.pages.view");
+    const { t } = await getTranslations(request);
+    const item = await getPage(params.id!);
+    if (!item) {
+      return redirect("/admin/pages");
+    }
+    const page = await getPageConfiguration({ request, t, page: item, slug: item.slug });
+    const data: LoaderData = {
+      page,
+    };
+    return data;
+  };
+
+  export type ActionData = {
+    success: string;
+    error: string;
+    page?: PageConfiguration;
+    aiGeneratedBlocks?: PageBlockDto[];
+  };
+  export const action: ActionFunction = async ({ request, params }) => {
+    await verifyUserHasPermission(request, "admin.pages.update");
+    const { t } = await getTranslations(request);
+    const form = await request.formData();
+    const action = form.get("action")?.toString();
+
+    const item = await getPage(params.id!);
+    if (!item) {
+      return redirect("/admin/pages");
+    }
+    // const page = await getPageConfiguration({ request, t, page: item, slug: item.slug });
+
+    if (action === "save") {
+      const blocks = form.get("blocks");
+      try {
+        const parsed = JSON.parse(blocks?.toString() ?? "[]") as PageBlockDto[];
+        await deletePageBlocks(item);
+        await Promise.all(
+          parsed.map(async (block, idx) => {
+            const keys = Object.keys(block);
+            if (keys.length === 0) {
+              throw new Error("Invalid block type: " + JSON.stringify(block));
+            }
+            const type = keys[0];
+            return await createPageBlock({
+              pageId: item.id,
+              order: idx + 1,
+              type,
+              value: JSON.stringify(block),
+            });
+          })
+        );
+        return Response.json({
+          success: "Page blocks saved successfully",
+        });
+      } catch (e: any) {
+        return Response.json({ error: e.message }, { status: 400 });
+      }
+    } else if (action === "reset") {
+      await deletePageBlocks(item);
+      return Response.json({
+        // success: "Page blocks reset successfully",
+        page: await getPageConfiguration({ request, t, slug: item.slug }),
+      });
+    } else if (action === "delete") {
+      await verifyUserHasPermission(request, "admin.pages.delete");
+      await deletePageBlocks(item);
+      await deletePage(item.id);
+      return redirect("/admin/pages");
+    } else {
+      return Response.json({
+        error: t("shared.invalidForm"),
+      });
+    }
+  };
+}
